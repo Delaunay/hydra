@@ -1,0 +1,35 @@
+defaults:
+  - override hydra/sweeper: orion
+
+hydra:
+  sweeper:
+    optim:
+      name: 'experiment'
+      version: '1'
+      algorithms: ''
+      max_trials: 10000
+      max_broken: 3
+      storage: ''
+      max_idle_time: 60
+      heartbeat: 120
+      debug: false
+      executor: ''
+
+    storage:
+      type: pickleddb
+      host: 'database.pkl'
+
+    # default parametrization of the search space
+    parametrization:
+      lr: "uniform(0, 1)"
+      db: "choices(['mnist', 'cifar'])"
+      dropout: "uniform(0, 1)"
+      bath_size: "uniform(4, 16, discrete=True)"
+
+db: cifar
+lr: 0.01
+dropout: 0.6
+batch_size: 8
+
+# if true, simulate a failure by raising an exception
+error: false

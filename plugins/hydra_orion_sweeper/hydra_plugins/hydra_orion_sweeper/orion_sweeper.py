@@ -6,21 +6,19 @@ from hydra.plugins.sweeper import Sweeper
 from hydra.types import HydraContext
 from omegaconf import DictConfig
 
-from .config import ExperimentConfig, WorkerConfig, DatabaseConfig
+from .config import OrionClientConf
 
 
 class OrionSweeper(Sweeper):
     """Class to interface with Nevergrad"""
 
     def __init__(self,
-        experiment: ExperimentConfig,
-        worker: WorkerConfig,
-        storage: DatabaseConfig,
+        optim: OrionClientConf,
         parametrization: Optional[DictConfig]
     ):
         from ._impl import OrionSweeperImpl
 
-        self.sweeper = OrionSweeperImpl(experiment, worker, storage, parametrization)
+        self.sweeper = OrionSweeperImpl(optim, parametrization)
 
     def setup(
         self,

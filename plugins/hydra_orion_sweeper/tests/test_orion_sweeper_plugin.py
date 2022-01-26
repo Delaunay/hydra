@@ -3,7 +3,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import orion
 from hydra.core.override_parser.overrides_parser import OverridesParser
 from hydra.core.plugins import Plugins
 from hydra.plugins.sweeper import Sweeper
@@ -17,13 +16,13 @@ from omegaconf import DictConfig, OmegaConf
 from pytest import mark
 
 from hydra_plugins.hydra_orion_sweeper import _impl
-from hydra_plugins.hydra_orion_sweeper.nevergrad_sweeper import NevergradSweeper
+from hydra_plugins.hydra_orion_sweeper.orion_sweeper import OrionSweeper
 
 chdir_plugin_root()
 
 
 def test_discovery() -> None:
-    assert NevergradSweeper.__name__ in [
+    assert OrionSweeper.__name__ in [
         x.__name__ for x in Plugins.instance().discover(Sweeper)
     ]
 
@@ -63,11 +62,11 @@ def get_scalar_with_integer_bounds(lower: int, upper: int, type: Any) -> ng.p.Sc
         ),
     ],
 )
-def test_create_nevergrad_parameter_from_config(
+def test_create_orion_parameter_from_config(
     input: Any,
     expected: Any,
 ) -> None:
-    actual = _impl.create_nevergrad_param_from_config(input)
+    actual = _impl.create_orion_param_from_config(input)
     assert_ng_param_equals(expected, actual)
 
 
@@ -78,8 +77,8 @@ def test_create_nevergrad_parameter_from_config(
         ("key=choice('hello','world')", ng.p.Choice(["hello", "world"])),
         ("key=tag(ordered, choice(1,2,3))", ng.p.TransitionChoice([1, 2, 3])),
         (
-            "key=tag(ordered, choice('hello','world', 'nevergrad'))",
-            ng.p.TransitionChoice(["hello", "world", "nevergrad"]),
+            "key=tag(ordered, choice('hello','world', 'orion'))",
+            ng.p.TransitionChoice(["hello", "world", "orion"]),
         ),
         ("key=range(1,3)", ng.p.Choice([1, 2])),
         ("key=shuffle(range(1,3))", ng.p.Choice([1, 2])),
@@ -96,13 +95,13 @@ def test_create_nevergrad_parameter_from_config(
         ),
     ],
 )
-def test_create_nevergrad_parameter_from_override(
+def test_create_orion_parameter_from_override(
     input: Any,
     expected: Any,
 ) -> None:
     parser = OverridesParser.create()
     parsed = parser.parse_overrides([input])[0]
-    param = _impl.create_nevergrad_parameter_from_override(parsed)
+    param = _impl.create_orion_parameter_from_override(parsed)
     assert_ng_param_equals(param, expected)
 
 
@@ -115,7 +114,7 @@ def test_launched_jobs(hydra_sweep_runner: TSweepRunner) -> None:
         config_name="compose.yaml",
         task_function=None,
         overrides=[
-            "hydra/sweeper=nevergrad",
+            "hydra/sweeper=orion",
             "hydra/launcher=basic",
             f"hydra.sweeper.optim.budget={budget}",  # small budget to test fast
             "hydra.sweeper.optim.num_workers=3",
@@ -128,7 +127,7 @@ def test_launched_jobs(hydra_sweep_runner: TSweepRunner) -> None:
 
 
 @mark.parametrize("with_commandline", (True, False))
-def test_nevergrad_example(with_commandline: bool, tmpdir: Path) -> None:
+def test_orion_example(with_commandline: bool, tmpdir: Path) -> None:
     budget = 32 if with_commandline else 1  # make a full test only once (faster)
     cmd = [
         "example/my_app.py",
@@ -149,7 +148,7 @@ def test_nevergrad_example(with_commandline: bool, tmpdir: Path) -> None:
     run_python_script(cmd)
     returns = OmegaConf.load(f"{tmpdir}/optimization_results.yaml")
     assert isinstance(returns, DictConfig)
-    assert returns.name == "nevergrad"
+    assert returns.name == "orion"
     assert len(returns) == 3
     best_parameters = returns.best_evaluated_params
     assert not best_parameters.dropout.is_integer()
