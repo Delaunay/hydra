@@ -27,82 +27,44 @@ def test_discovery() -> None:
     ]
 
 
-def assert_ng_param_equals(expected: Any, actual: Any) -> None:
-    assert type(expected) == type(actual)
-    if isinstance(actual, ng.p.Choice) or isinstance(actual, ng.p.TransitionChoice):
-        assert sorted(expected.choices.value) == sorted(actual.choices.value)
-    elif isinstance(actual, ng.p.Log) or isinstance(actual, ng.p.Scalar):
-        assert expected.bounds == actual.bounds
-        assert expected.integer == actual.integer
-    else:
-        assert False, f"Unexpected type: {type(actual)}"
+def test_orion_space():
+    config = dict(
+        a0='uniform(0, 1)',
+        a1='uniform(0, 1, discrete=True)',
+        a2='uniform(0, 1, precision=2)',
 
+        b0='loguniform(1, 2)',
+        b1='loguniform(1, 2, discrete=True)',
+        b2='loguniform(1, 2, precision=2)',
 
-def get_scalar_with_integer_bounds(lower: int, upper: int, type: Any) -> ng.p.Scalar:
-    scalar = type(lower=lower, upper=upper)
-    scalar.set_integer_casting()
-    assert isinstance(scalar, ng.p.Scalar)
-    return scalar
+        c0='normal(0, 1)',
+        c1='normal(0, 1, discrete=True)',
+        c2='normal(0, 1, precision=True)',
 
+        d0='choices(["a", "b"])',
 
-@mark.parametrize(
-    "input, expected",
-    [
-        ([1, 2, 3], ng.p.Choice([1, 2, 3])),
-        (["1", "2", "3"], ng.p.Choice(["1", "2", "3"])),
-        ({"lower": 1, "upper": 12, "log": True}, ng.p.Log(lower=1, upper=12)),
-        ({"lower": 1, "upper": 12}, ng.p.Scalar(lower=1, upper=12)),
-        (
-            {"lower": 1, "upper": 12, "integer": True},
-            get_scalar_with_integer_bounds(1, 12, ng.p.Scalar),
-        ),
-        (
-            {"lower": 1, "upper": 12, "log": True, "integer": True},
-            get_scalar_with_integer_bounds(1, 12, ng.p.Log),
-        ),
-    ],
-)
-def test_create_orion_parameter_from_config(
-    input: Any,
-    expected: Any,
-) -> None:
-    actual = _impl.create_orion_param_from_config(input)
-    assert_ng_param_equals(expected, actual)
+        e0='fidelity(10, 100)',
+        e1='fidelity(10, 100, base=3)',
+    )
 
+    space = _impl.create_orion_space(config)
+    assert config == space.configuration
 
-@mark.parametrize(
-    "input, expected",
-    [
-        ("key=choice(1,2)", ng.p.Choice([1, 2])),
-        ("key=choice('hello','world')", ng.p.Choice(["hello", "world"])),
-        ("key=tag(ordered, choice(1,2,3))", ng.p.TransitionChoice([1, 2, 3])),
-        (
-            "key=tag(ordered, choice('hello','world', 'orion'))",
-            ng.p.TransitionChoice(["hello", "world", "orion"]),
-        ),
-        ("key=range(1,3)", ng.p.Choice([1, 2])),
-        ("key=shuffle(range(1,3))", ng.p.Choice([1, 2])),
-        ("key=range(1,5)", ng.p.Choice([1, 2, 3, 4])),
-        ("key=float(range(1,5))", ng.p.Choice([1.0, 2.0, 3.0, 4.0])),
-        (
-            "key=int(interval(1,12))",
-            get_scalar_with_integer_bounds(lower=1, upper=12, type=ng.p.Scalar),
-        ),
-        ("key=tag(log, interval(1,12))", ng.p.Log(lower=1, upper=12)),
-        (
-            "key=tag(log, int(interval(1,12)))",
-            get_scalar_with_integer_bounds(lower=1, upper=12, type=ng.p.Log),
-        ),
-    ],
-)
-def test_create_orion_parameter_from_override(
-    input: Any,
-    expected: Any,
-) -> None:
-    parser = OverridesParser.create()
-    parsed = parser.parse_overrides([input])[0]
-    param = _impl.create_orion_parameter_from_override(parsed)
-    assert_ng_param_equals(param, expected)
+def test_orion_overrides():
+    overrides = [
+        # Overrides
+        "choice_1=1,2",
+        "choice_2=range(1, 8)",
+
+        "uniform_1=interval(0, 1)",
+        "uniform_2=int(interval(0, 1))",
+        "uniform_3=tag(log, interval(0, 1))",
+
+        # Regular argument
+        "bar=4:8",
+    ]
+
+    space, name = _impl.space_from_overrides(overrides)
 
 
 def test_launched_jobs(hydra_sweep_runner: TSweepRunner) -> None:
@@ -116,12 +78,17 @@ def test_launched_jobs(hydra_sweep_runner: TSweepRunner) -> None:
         overrides=[
             "hydra/sweeper=orion",
             "hydra/launcher=basic",
-            f"hydra.sweeper.optim.budget={budget}",  # small budget to test fast
-            "hydra.sweeper.optim.num_workers=3",
+            f"hydra.sweeper.orion.max_trials={budget}",  # small budget to test fast
+            "+hydra.sweeper.orion.algorithms.name=random",
+            "+hydra.sweeper.orion.storage.host=test.db",
+            "+hydra.sweeper.orion.storage.type=pickledb",
+            "hydra.sweeper.worker.n_workers=3",
+
             "foo=1,2",
             "bar=4:8",
         ],
     )
+
     with sweep:
         assert sweep.returns is None
 
@@ -129,15 +96,16 @@ def test_launched_jobs(hydra_sweep_runner: TSweepRunner) -> None:
 @mark.parametrize("with_commandline", (True, False))
 def test_orion_example(with_commandline: bool, tmpdir: Path) -> None:
     budget = 32 if with_commandline else 1  # make a full test only once (faster)
+
     cmd = [
         "example/my_app.py",
         "-m",
         "hydra.sweep.dir=" + str(tmpdir),
         "hydra.job.chdir=True",
-        f"hydra.sweeper.optim.budget={budget}",  # small budget to test fast
+        f"hydra.sweeper.optim.max_trials={budget}",  # small budget to test fast
         f"hydra.sweeper.optim.num_workers={min(8, budget)}",
-        "hydra.sweeper.optim.seed=12",  # avoid random failures
     ]
+
     if with_commandline:
         cmd += [
             "db=mnist,cifar",
@@ -145,36 +113,42 @@ def test_orion_example(with_commandline: bool, tmpdir: Path) -> None:
             "lr=tag(log, interval(0.001, 1.0))",
             "dropout=interval(0,1)",
         ]
+
     run_python_script(cmd)
+
     returns = OmegaConf.load(f"{tmpdir}/optimization_results.yaml")
+
     assert isinstance(returns, DictConfig)
     assert returns.name == "orion"
     assert len(returns) == 3
+
     best_parameters = returns.best_evaluated_params
     assert not best_parameters.dropout.is_integer()
+
     if budget > 1:
         assert best_parameters.batch_size == 4  # this argument should be easy to find
+
     # check that all job folders are created
     last_job = max(int(fp.name) for fp in Path(tmpdir).iterdir() if fp.name.isdigit())
     assert last_job == budget - 1
 
 
-@mark.parametrize("max_failure_rate", (0.5, 1.0))
-def test_failure_rate(max_failure_rate: float, tmpdir: Path) -> None:
-    cmd = [
-        sys.executable,
-        "example/my_app.py",
-        "-m",
-        f"hydra.sweep.dir={tmpdir}",
-        "hydra.sweeper.optim.budget=2",  # small budget to test fast
-        "hydra.sweeper.optim.num_workers=2",
-        f"hydra.sweeper.optim.max_failure_rate={max_failure_rate}",
-        "error=true",
-    ]
-    out, err = run_process(cmd, print_error=False, raise_exception=False)
-    assert "Returning infinity for failed experiment" in out
-    error_string = "RuntimeError: cfg.error is True"
-    if max_failure_rate < 1.0:
-        assert error_string in err
-    else:
-        assert error_string not in err
+# @mark.parametrize("max_failure_rate", (0.5, 1.0))
+# def test_failure_rate(max_failure_rate: float, tmpdir: Path) -> None:
+#     cmd = [
+#         sys.executable,
+#         "example/my_app.py",
+#         "-m",
+#         f"hydra.sweep.dir={tmpdir}",
+#         "hydra.sweeper.optim.budget=2",  # small budget to test fast
+#         "hydra.sweeper.optim.num_workers=2",
+#         f"hydra.sweeper.optim.max_failure_rate={max_failure_rate}",
+#         "error=true",
+#     ]
+#     out, err = run_process(cmd, print_error=False, raise_exception=False)
+#     assert "Returning infinity for failed experiment" in out
+#     error_string = "RuntimeError: cfg.error is True"
+#     if max_failure_rate < 1.0:
+#         assert error_string in err
+#     else:
+#         assert error_string not in err

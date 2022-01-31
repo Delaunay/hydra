@@ -28,7 +28,7 @@ from hydra.plugins.sweeper import Sweeper
 from hydra.types import HydraContext, TaskFunction
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from .config import OrionClientConf
+from .config import OrionClientConf, WorkerConf
 
 log = logging.getLogger(__name__)
 
@@ -84,18 +84,59 @@ def create_orion_override(name, override: Override) -> Any:
         return make_dimension(name, 'choices', *vals)
 
 
-def create_orion_space(parametrization: Optional[DictConfig]) -> Any:
+def create_orion_space(parametrization: Optional[DictConfig]) -> Space:
     space = Space()
 
     for x, y in parametrization.items():
-        if isinstance(y, MutableMapping) and 'name' in y:
-            dim = make_dimension(x, y['name'], **y)
-            try:
-                space.register(dim)
-            except ValueError as exc:
-                log.error("Duplicate name for %s", x)
+        print(x, y)
+
+        dim = make_dimension(x, y['name'], **y)
+        try:
+            space.register(dim)
+        except ValueError as exc:
+            log.error("Duplicate name for %s", x)
 
     return space
+
+
+def space_from_overrides(arguments: List[str]):
+    """Generate an Orion space from a list of arguments"""
+
+    space = Space()
+    parser = OverridesParser.create()
+    parsed = parser.parse_overrides(arguments)
+    arguments = dict()
+
+    for override in parsed:
+        builder = DimensionBuilder()
+        builder.name = override.key_or_group
+        values = override.value()
+
+        if not override.is_sweep_override():
+            arguments[builder.name] = values
+
+        elif override.is_choice_sweep():
+            dim = builder.choices(values.list)
+            space.register(dim)
+
+        elif override.is_range_sweep():
+            choices = [v for v in range(values.start, values.stop, values.step)]
+            dim = builder.choices(*choices)
+            space.register(dim)
+
+        elif override.is_interval_sweep():
+            discrete = type(values.start) is int
+
+            if 'log' in values.tags:
+                method = builder.loguniform
+            else:
+                method = builder.uniform
+
+            dim = method(values.start, values.end, discrete=discrete)
+            space.register(dim)
+
+    return space, arguments
+
 
 def workon_wrapper(*args, launcher=None, initial_job_idx=None, **kwargs):
     print(args, kwargs)
@@ -104,10 +145,12 @@ def workon_wrapper(*args, launcher=None, initial_job_idx=None, **kwargs):
 class OrionSweeperImpl(Sweeper):
     def __init__(
         self,
-        optim: OrionClientConf,
+        client: OrionClientConf,
+        worker: WorkerConf,
         parametrization: Optional[DictConfig]
     ):
-        self.client_config = optim
+        self.client_config = client
+        self.worker_config = worker
 
         self.config: Optional[DictConfig] = None
         self.launcher: Optional[Launcher] = None
@@ -128,47 +171,54 @@ class OrionSweeperImpl(Sweeper):
         self.config = config
         self.hydra_context = hydra_context
         self.launcher = Plugins.instance().instantiate_launcher(
-            hydra_context=hydra_context, task_function=task_function, config=config
+            hydra_context=hydra_context,
+            task_function=task_function,
+            config=config
         )
-
-    def overrides(self, arguments: List[str]):
-        # Override the parametrization from commandline
-        params = deepcopy(self.parametrization)
-
-        parser = OverridesParser.create()
-        parsed = parser.parse_overrides(arguments)
-
-        for override in parsed:
-            name = override.get_key_element()
-            value = create_orion_override(name, override)
-            super(Space, params).__setitem__(name, value)
-
-        return params
 
     def sweep(self, arguments: List[str]) -> None:
         assert self.config is not None
         assert self.launcher is not None
         assert self.job_idx is not None
 
-        self.client = create_experiment(**asdict(self.client_config))
+        space, arguments = space_from_overrides(arguments)
+        print()
+        print(space)
+        print(arguments)
+        print(self.client_config)
+        print()
+
+        client_config = OmegaConf.to_container(self.client_config)
+        executor = 'poolexecutor'
+
+        if 'algorithms' in client_config:
+            algorithms_config = client_config.pop('algorithms')
+            algorithms_name = algorithms_config.pop('name', None)
+            client_config['algorithms'] = {
+                algorithms_name: algorithms_config
+            }
+
+        if client_config['executor']:
+            executor = client_config.pop(client_config['executor'])
+
+        self.client = create_experiment(
+            space=space,
+            **client_config
+        )
 
         additional_arguments = dict(
             initial_job_idx=self.job_idx,
             launcher=self.launcher.launch
         )
 
-        self.client.workon(
-            workon_wrapper,
-            n_workers=None,
-            pool_size=0,
-            reservation_timeout=None,
-            max_trials=None,
-            max_trials_per_worker=None,
-            max_broken=None,
-            trial_arg=arguments,
-            on_error=None,
-            **additional_arguments,
-        )
+        with self.client.tmp_executor(executor):
+            self.client.workon(
+                workon_wrapper,
+                trial_arg=arguments,
+                on_error=None,
+                **self.worker_config,
+                **additional_arguments,
+            )
 
         results_to_serialize = self.client.stats
         best_params = self.client.get_trial(

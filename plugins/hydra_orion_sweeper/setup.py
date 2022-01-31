@@ -26,7 +26,7 @@ setup(
     ],
     install_requires=[
         "hydra-core>=1.1.0.dev7",
-        "orion>=0.2.2",
+        "orion>=0.2.1",
     ],
     include_package_data=True,
 )
