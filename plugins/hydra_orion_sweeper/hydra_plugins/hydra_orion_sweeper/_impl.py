@@ -10,6 +10,7 @@ from typing import (
     MutableMapping,
     MutableSequence,
     Optional,
+    OrderedDict,
     Tuple,
     Union,
 )
@@ -35,7 +36,7 @@ log = logging.getLogger(__name__)
 
 from orion.client import create_experiment
 from orion.algo.space import Space
-from orion.core.io.space_builder import DimensionBuilder
+from orion.core.io.space_builder import DimensionBuilder, SpaceBuilder
 
 
 def make_dimension(name, method, **kwargs):
@@ -84,24 +85,33 @@ def create_orion_override(name, override: Override) -> Any:
         return make_dimension(name, 'choices', *vals)
 
 
-def create_orion_space(parametrization: Optional[DictConfig]) -> Space:
-    space = Space()
+def space_from_arguments(arguments: List[str]):
+    arguments.sort()
+    remains = []
+    configure = OrderedDict()
 
-    for x, y in parametrization.items():
-        print(x, y)
+    for arg in arguments:
+        # name='loguniform(0, 1)'
+        name_prior = (arg
+            .replace("'", "")
+            .replace("\"", "")
+            .split("=")
+        )
 
-        dim = make_dimension(x, y['name'], **y)
-        try:
-            space.register(dim)
-        except ValueError as exc:
-            log.error("Duplicate name for %s", x)
+        if len(name_prior) != 2:
+            remains.append(arg)
+            continue
 
-    return space
+        name, prior = name_prior
+        configure[name] = prior
+
+    print(configure)
+    builder = SpaceBuilder()
+    return builder.build(configure), remains
 
 
-def space_from_overrides(arguments: List[str]):
+def space_from_nevergrad_overrides(arguments: List[str]):
     """Generate an Orion space from a list of arguments"""
-
     space = Space()
     parser = OverridesParser.create()
     parsed = parser.parse_overrides(arguments)
@@ -181,7 +191,8 @@ class OrionSweeperImpl(Sweeper):
         assert self.launcher is not None
         assert self.job_idx is not None
 
-        space, arguments = space_from_overrides(arguments)
+        space, arguments = space_from_arguments(arguments)
+
         print()
         print(space)
         print(arguments)

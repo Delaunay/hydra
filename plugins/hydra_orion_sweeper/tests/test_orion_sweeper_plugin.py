@@ -50,24 +50,58 @@ def test_orion_space():
     space = _impl.create_orion_space(config)
     assert config == space.configuration
 
-def test_orion_overrides():
+
+def test_orion_with_orion_overrides():
+    overrides = [
+        'a0~uniform(0, 1)',
+        'a1~uniform(0, 1, discrete=True)',
+        # 'a2~uniform(0, 1, precision=2)',
+
+        'b0~loguniform(1, 2)',
+        'b1~loguniform(1, 2, discrete=True)',
+        # 'b2~loguniform(1, 2, precision=2)',
+
+        # 'c0~normal(0, 1)',
+        # 'c1~normal(0, 1, discrete=True)',
+        # 'c2~normal(0, 1, precision=True)',
+
+        "d0~choices(['a', 'b'])",
+
+        # 'e0~fidelity(10, 100)',
+        # 'e1~fidelity(10, 100, base=3)',
+    ]
+    # Make the order wrong
+    overrides.sort(reverse=True)
+
+    space, _ = _impl.space_from_orion_overrides(overrides)
+
+    # The order should be correct
+    overrides.sort()
+    for pair, expected in zip(space.configuration.items(), overrides):
+        assert pair == tuple(expected.split('~'))
+
+
+def test_orion_with_nevergrad_overrides():
     overrides = [
         # Overrides
-        "choice_1=1,2",
-        "choice_2=range(1, 8)",
+        ("choice_1=1,2", 'choice([1, 2])'),
+        ("choice_2=range(1, 8)", 'choice[1, 2, 3, 4, 5, 6, 7]'),
 
-        "uniform_1=interval(0, 1)",
-        "uniform_2=int(interval(0, 1))",
-        "uniform_3=tag(log, interval(0, 1))",
+        ("uniform_1=interval(0, 1)", 'uniform(0, 1)'),
+        ("uniform_2=int(interval(0, 1))", 'uniform(0, 1, discrete=True)'),
+        ("uniform_3=tag(log, interval(0, 1))", 'loguniform(0, 1)'),
 
         # Regular argument
-        "bar=4:8",
+        ("bar=4:8", None),
     ]
 
-    space, name = _impl.space_from_overrides(overrides)
+    space, _ = _impl.space_from_overrides([override[0] for override in overrides])
+
+    for (_, dim), expected in zip(space.configuration.items(), overrides):
+        assert dim == expected
 
 
-def test_launched_jobs(hydra_sweep_runner: TSweepRunner) -> None:
+def test_orion_arguments(hydra_sweep_runner: TSweepRunner) -> None:
     budget = 8
     sweep = hydra_sweep_runner(
         calling_file=None,
@@ -84,8 +118,25 @@ def test_launched_jobs(hydra_sweep_runner: TSweepRunner) -> None:
             "+hydra.sweeper.orion.storage.type=pickledb",
             "hydra.sweeper.worker.n_workers=3",
 
-            "foo=1,2",
-            "bar=4:8",
+            # Orion Space definition
+            # using hunt interface
+            "unif='uniform(0, 1)'",
+            "unii='uniform(0, 10, discrete=True)'",
+            "unip='uniform(0, 1, precision=2)'",
+
+            "lunf='loguniform(1, 2)'",
+            "luni='loguniform(1, 2, discrete=True))'",
+            "lunp='loguniform(1, 2, precision=2)'",
+
+            "norf='normal(0, 1)'",
+            "nori='normal(0, 1, discrete=True)'",
+            "norp='normal(0, 1, precision=True)'",
+
+            "choi='choices([1, 2])'",
+            "choi='choices([\"1\", \"2\"])'",
+
+            "fid2='fidelity(10, 100)'",
+            "fid3='fidelity(10, 100, base=3)'",
         ],
     )
 
