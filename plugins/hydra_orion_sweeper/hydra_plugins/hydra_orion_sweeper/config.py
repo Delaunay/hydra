@@ -20,12 +20,12 @@ class OrionClientConf:
     version: Optional[str] = None
     algorithms: Dict[str, Any] = field(default_factory=dict)
     strategy: Optional[str] = None
-    max_trials: Optional[str] = None
-    max_broken: Optional[str] = None
+    max_trials: Optional[int] = None
+    max_broken: Optional[int] = None
     storage: Dict[str, Any] = field(default_factory=dict)
     branching: Optional[str] = None
     max_idle_time: Optional[str] = None
-    heartbeat: Optional[str] = None
+    heartbeat: Optional[int] = None
     working_dir: Optional[str] = None
     debug: Optional[str] = False
     executor: Optional[str] = None

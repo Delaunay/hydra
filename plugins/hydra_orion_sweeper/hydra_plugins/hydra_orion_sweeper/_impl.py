@@ -34,9 +34,18 @@ from .config import OrionClientConf, WorkerConf
 log = logging.getLogger(__name__)
 
 
+from orion.core.utils.flatten import flatten
 from orion.client import create_experiment
 from orion.algo.space import Space
 from orion.core.io.space_builder import DimensionBuilder, SpaceBuilder
+from orion.core.utils.exceptions import (
+    BrokenExperiment,
+    CompletedExperiment,
+    InvalidResult,
+    LazyWorkers,
+    ReservationRaceCondition,
+    WaitingForTrials,
+)
 
 
 def make_dimension(name, method, **kwargs):
@@ -148,8 +157,11 @@ def space_from_nevergrad_overrides(arguments: List[str]):
     return space, arguments
 
 
-def workon_wrapper(*args, launcher=None, initial_job_idx=None, **kwargs):
-    print(args, kwargs)
+def as_overrides(trial, additional):
+    """Returns the trial arguments as hydra overrides"""
+    kwargs = deepcopy(additional)
+    kwargs.update(flatten(trial.params))
+    return  tuple(f"{k}={v}" for k, v in kwargs.items())
 
 
 class OrionSweeperImpl(Sweeper):
@@ -186,21 +198,30 @@ class OrionSweeperImpl(Sweeper):
             config=config
         )
 
-    def sweep(self, arguments: List[str]) -> None:
-        assert self.config is not None
-        assert self.launcher is not None
-        assert self.job_idx is not None
+    def suggest_trials(self, count):
+        """Suggest a bunch of trials to be dispatched to the workers"""
+        trials = []
+        for _ in range(count):
+            try:
+                trial = self.client.suggest(pool_size=count)
+                trials.append(trial)
 
+            # non critical errors
+            except WaitingForTrials:
+                break
+
+            except ReservationRaceCondition:
+                break
+
+            except CompletedExperiment:
+                break
+
+        return trials
+
+    def init_client(self, arguments):
         space, arguments = space_from_arguments(arguments)
 
-        print()
-        print(space)
-        print(arguments)
-        print(self.client_config)
-        print()
-
         client_config = OmegaConf.to_container(self.client_config)
-        executor = 'poolexecutor'
 
         if 'algorithms' in client_config:
             algorithms_config = client_config.pop('algorithms')
@@ -209,36 +230,64 @@ class OrionSweeperImpl(Sweeper):
                 algorithms_name: algorithms_config
             }
 
-        if client_config['executor']:
-            executor = client_config.pop(client_config['executor'])
+        print()
+        print(space)
+        print(arguments)
+        print(self.client_config)
+        print()
 
-        self.client = create_experiment(
+        return create_experiment(
             space=space,
             **client_config
         )
 
-        additional_arguments = dict(
-            initial_job_idx=self.job_idx,
-            launcher=self.launcher.launch
-        )
+    def sweep(self, arguments: List[str]) -> None:
+        assert self.config is not None
+        assert self.launcher is not None
+        assert self.job_idx is not None
 
-        with self.client.tmp_executor(executor):
-            self.client.workon(
-                workon_wrapper,
-                trial_arg=arguments,
-                on_error=None,
-                **self.worker_config,
-                **additional_arguments,
+        self.client = self.init_client(arguments)
+
+        while not self.client.is_done:
+            trials = self.suggest_trials(self.worker_config.n_workers)
+
+            overrides = list(
+                as_overrides(t, dict())  for t in trials
             )
 
-        results_to_serialize = self.client.stats
-        best_params = self.client.get_trial(
-            uid=results_to_serialize['best_trials_id ']
-        ).params
-        results_to_serialize['best_params'] = best_params
+            returns = self.launcher.launch(overrides, initial_job_idx=self.job_idx)
+
+            for trial, result in zip(trials, returns):
+                if result.status == utils.JobStatus.COMPLETED:
+                    value = result.return_value
+
+                    objective = dict(name="objective", type="objective", value=value)
+
+                    self.client.observe(trial, [objective])
+
+                elif result.status == utils.JobStatus.FAILED:
+                    # We probably got an exception
+                    self.client.release(trial, status="broken")
+
+                elif result.status == utils.JobStatus.UNKNOWN:
+                    # Assume unkown is because something weird happened
+                    self.client.release(trial, status="interrupted")
+
+        self.show_results()
+
+    def show_results(self):
+        results = self.client.stats
+
+        best_params = self.client.get_trial(uid=results.best_trials_id).params
+
+        results = asdict(results)
+        results['best_params'] = best_params
+        results['start_time'] = str(results['start_time'])
+        results['finish_time'] = str(results['finish_time'])
+        results['duration'] = str(results['duration'])
 
         OmegaConf.save(
-            OmegaConf.create(results_to_serialize),
+            OmegaConf.create(results),
             f"{self.config.hydra.sweep.dir}/optimization_results.yaml",
         )
 

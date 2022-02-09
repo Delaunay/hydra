@@ -118,25 +118,8 @@ def test_orion_arguments(hydra_sweep_runner: TSweepRunner) -> None:
             "+hydra.sweeper.orion.storage.type=pickledb",
             "hydra.sweeper.worker.n_workers=3",
 
-            # Orion Space definition
-            # using hunt interface
-            "unif='uniform(0, 1)'",
-            "unii='uniform(0, 10, discrete=True)'",
-            "unip='uniform(0, 1, precision=2)'",
-
-            "lunf='loguniform(1, 2)'",
-            "luni='loguniform(1, 2, discrete=True))'",
-            "lunp='loguniform(1, 2, precision=2)'",
-
-            "norf='normal(0, 1)'",
-            "nori='normal(0, 1, discrete=True)'",
-            "norp='normal(0, 1, precision=True)'",
-
-            "choi='choices([1, 2])'",
-            "choi='choices([\"1\", \"2\"])'",
-
-            "fid2='fidelity(10, 100)'",
-            "fid3='fidelity(10, 100, base=3)'",
+            "foo='choices([1, 2])'",
+            "bar='choices([4, 5, 6, 7, 8])'"
         ],
     )
 
