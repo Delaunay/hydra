@@ -29,11 +29,6 @@ from hydra.plugins.sweeper import Sweeper
 from hydra.types import HydraContext, TaskFunction
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from .config import OrionClientConf, WorkerConf
-
-log = logging.getLogger(__name__)
-
-
 from orion.core.utils.flatten import flatten
 from orion.client import create_experiment
 from orion.client.experiment import ExperimentClient
@@ -45,6 +40,11 @@ from orion.core.utils.exceptions import (
     ReservationRaceCondition,
     WaitingForTrials,
 )
+
+
+from .config import OrionClientConf, WorkerConf
+
+log = logging.getLogger(__name__)
 
 
 def make_dimension(name, method, **kwargs):
@@ -191,6 +191,11 @@ class OrionSweeperImpl(Sweeper):
         self.job_idx = 0
         self.config = config
         self.hydra_context = hydra_context
+
+        # Maybe we could have an option to replace the launcher
+        # by our own here, we can save the task function
+        # and use it with workon
+        # which would make our research more efficient
         self.launcher = Plugins.instance().instantiate_launcher(
             hydra_context=hydra_context,
             task_function=task_function,
@@ -250,6 +255,7 @@ class OrionSweeperImpl(Sweeper):
         assert self.job_idx is not None
 
         self.client = self.new_experiment(arguments)
+        failures = []
 
         while not self.client.is_done:
             trials = self.suggest_trials(self.worker_config.n_workers)
@@ -258,7 +264,10 @@ class OrionSweeperImpl(Sweeper):
                 as_overrides(t, dict())  for t in trials
             )
 
+            self.validate_batch_is_legal(overrides)
             returns = self.launcher.launch(overrides, initial_job_idx=self.job_idx)
+
+            self.job_idx += len(returns)
 
             for trial, result in zip(trials, returns):
                 if result.status == utils.JobStatus.COMPLETED:
@@ -271,10 +280,14 @@ class OrionSweeperImpl(Sweeper):
                 elif result.status == utils.JobStatus.FAILED:
                     # We probably got an exception
                     self.client.release(trial, status="broken")
+                    failures.append(result)
 
                 elif result.status == utils.JobStatus.UNKNOWN:
-                    # Assume unkown is because something weird happened
                     self.client.release(trial, status="interrupted")
+
+            if len(failures) > self.worker_config.max_broken:
+                # make the `Future` raise the exception it received
+                failures[-1].return_value
 
         self.show_results()
 
