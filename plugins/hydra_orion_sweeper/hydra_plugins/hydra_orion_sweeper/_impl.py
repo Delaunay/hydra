@@ -36,13 +36,12 @@ log = logging.getLogger(__name__)
 
 from orion.core.utils.flatten import flatten
 from orion.client import create_experiment
+from orion.client.experiment import ExperimentClient
+from orior.core.worker.trial import Trial
 from orion.algo.space import Space
 from orion.core.io.space_builder import DimensionBuilder, SpaceBuilder
 from orion.core.utils.exceptions import (
-    BrokenExperiment,
     CompletedExperiment,
-    InvalidResult,
-    LazyWorkers,
     ReservationRaceCondition,
     WaitingForTrials,
 )
@@ -198,9 +197,10 @@ class OrionSweeperImpl(Sweeper):
             config=config
         )
 
-    def suggest_trials(self, count):
+    def suggest_trials(self, count) -> List[Trial]:
         """Suggest a bunch of trials to be dispatched to the workers"""
         trials = []
+
         for _ in range(count):
             try:
                 trial = self.client.suggest(pool_size=count)
@@ -218,7 +218,8 @@ class OrionSweeperImpl(Sweeper):
 
         return trials
 
-    def init_client(self, arguments):
+    def new_experiment(self, arguments) -> ExperimentClient:
+        """Initialize orion client from the config and the arguments"""
         space, arguments = space_from_arguments(arguments)
 
         client_config = OmegaConf.to_container(self.client_config)
@@ -242,11 +243,13 @@ class OrionSweeperImpl(Sweeper):
         )
 
     def sweep(self, arguments: List[str]) -> None:
+        """Execute the optimization process"""
+
         assert self.config is not None
         assert self.launcher is not None
         assert self.job_idx is not None
 
-        self.client = self.init_client(arguments)
+        self.client = self.new_experiment(arguments)
 
         while not self.client.is_done:
             trials = self.suggest_trials(self.worker_config.n_workers)
@@ -275,7 +278,8 @@ class OrionSweeperImpl(Sweeper):
 
         self.show_results()
 
-    def show_results(self):
+    def show_results(self) -> None:
+        """Retrieve the optimization stats and show which config was the best"""
         results = self.client.stats
 
         best_params = self.client.get_trial(uid=results.best_trials_id).params

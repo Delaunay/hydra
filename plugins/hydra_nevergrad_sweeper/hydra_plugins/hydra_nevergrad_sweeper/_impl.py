@@ -159,6 +159,9 @@ class NevergradSweeperImpl(Sweeper):
                 tuple(f"{x}={y}" for x, y in c.value.items()) for c in candidates
             )
             self.validate_batch_is_legal(overrides)
+
+            print(overrides)
+
             returns = self.launcher.launch(overrides, initial_job_idx=self.job_idx)
             # would have been nice to avoid waiting for all jobs to finish
             # aka batch size Vs steady state (launching a new job whenever one is done)
