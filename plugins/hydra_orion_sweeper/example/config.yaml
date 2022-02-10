@@ -3,20 +3,17 @@ defaults:
 
 hydra:
   sweeper:
-    optim:
+    orion:
       name: 'experiment'
       version: '1'
-      algorithms: ''
-      max_trials: 10000
+
+    worker:
+      n_workers: -1
       max_broken: 3
-      storage: ''
-      max_idle_time: 60
-      heartbeat: 120
-      debug: false
-      executor: ''
+      max_trials: 10000
 
     storage:
-      type: pickleddb
+      type: pickledb
       host: 'database.pkl'
 
     # default parametrization of the search space

@@ -32,8 +32,8 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from orion.core.utils.flatten import flatten
 from orion.client import create_experiment
 from orion.client.experiment import ExperimentClient
-from orior.core.worker.trial import Trial
-from orion.algo.space import Space
+from orion.core.worker.trial import Trial
+from orion.algo.space import Space, Dimension
 from orion.core.io.space_builder import DimensionBuilder, SpaceBuilder
 from orion.core.utils.exceptions import (
     CompletedExperiment,
@@ -41,145 +41,108 @@ from orion.core.utils.exceptions import (
     WaitingForTrials,
 )
 
-
-from .config import OrionClientConf, WorkerConf
+from .config import OrionClientConf, WorkerConf, AlgorithmConf, StorageConf
 
 log = logging.getLogger(__name__)
-
-
-def make_dimension(name, method, **kwargs):
-    lower = kwargs.get('lower', 0)
-    upper = kwargs.get('upper', 1)
-    discrete = kwargs.get('discrete', False)
-    default_value = kwargs.get('default_value', None)
-    precision = kwargs.get('precision', 4)
-    shape = kwargs.get('shape', 1)
-    base = kwargs.get('base', 1)
-    choices = kwargs.get('choices', 1)
-
-    builder = DimensionBuilder()
-    builder.name = name
-
-    if method == 'choices' and isinstance(choices, MutableMapping):
-        return builder.choices(**choices)
-
-    if method == 'choices' and isinstance(choices, MutableSequence):
-        return builder.choices(*choices)
-
-    if method == 'fidelity':
-        return builder.fidelity(lower, upper, base=base)
-
-    method = getattr(builder, method)
-    return method(
-        lower,
-        upper,
-        discrete=discrete,
-        default_value=default_value,
-        precision=precision,
-        shape=shape
-    )
-
-
-def create_orion_override(name, override: Override) -> Any:
-    val = override.value()
-    if not override.is_sweep_override():
-        return val
-
-    if override.is_choice_sweep():
-        assert isinstance(val, ChoiceSweep)
-
-        vals = [x for x in override.sweep_iterator(transformer=Transformer.encode)]
-
-        return make_dimension(name, 'choices', *vals)
-
-
-def space_from_arguments(arguments: List[str]):
-    arguments.sort()
-    remains = []
-    configure = OrderedDict()
-
-    for arg in arguments:
-        # name='loguniform(0, 1)'
-        name_prior = (arg
-            .replace("'", "")
-            .replace("\"", "")
-            .split("=")
-        )
-
-        if len(name_prior) != 2:
-            remains.append(arg)
-            continue
-
-        name, prior = name_prior
-        configure[name] = prior
-
-    print(configure)
-    builder = SpaceBuilder()
-    return builder.build(configure), remains
-
-
-def space_from_nevergrad_overrides(arguments: List[str]):
-    """Generate an Orion space from a list of arguments"""
-    space = Space()
-    parser = OverridesParser.create()
-    parsed = parser.parse_overrides(arguments)
-    arguments = dict()
-
-    for override in parsed:
-        builder = DimensionBuilder()
-        builder.name = override.key_or_group
-        values = override.value()
-
-        if not override.is_sweep_override():
-            arguments[builder.name] = values
-
-        elif override.is_choice_sweep():
-            dim = builder.choices(values.list)
-            space.register(dim)
-
-        elif override.is_range_sweep():
-            choices = [v for v in range(values.start, values.stop, values.step)]
-            dim = builder.choices(*choices)
-            space.register(dim)
-
-        elif override.is_interval_sweep():
-            discrete = type(values.start) is int
-
-            if 'log' in values.tags:
-                method = builder.loguniform
-            else:
-                method = builder.uniform
-
-            dim = method(values.start, values.end, discrete=discrete)
-            space.register(dim)
-
-    return space, arguments
 
 
 def as_overrides(trial, additional):
     """Returns the trial arguments as hydra overrides"""
     kwargs = deepcopy(additional)
     kwargs.update(flatten(trial.params))
-    return  tuple(f"{k}={v}" for k, v in kwargs.items())
+    return tuple(f"{k}={v}" for k, v in kwargs.items())
+
+
+class SpaceParser:
+    """Generate an Orion space from parameters and overrides"""
+
+    def __init__(self) -> None:
+        self.space = dict()
+        self.overrides = dict()
+        self.arguments = dict()
+
+    def space(self) -> Space:
+        configuration = deepcopy(self.space)
+        configuration.update(self.overrides)
+        return SpaceBuilder().build(configuration), self.arguments
+
+    def add_from_parametrization(self, parametrization: Optional[DictConfig]) -> None:
+        for k, v in parametrization.items():
+            dim = self.parse_parametrization(k, v)
+            self.space[dim.name] = dim.get_prior_string()
+
+    def add_from_overrides(self, arguments: List[str]) -> None:
+        parser = OverridesParser.create()
+        parsed = parser.parse_overrides(arguments)
+
+        for override in parsed:
+            dim = self.process_overrides(override)
+            self.overrides[dim.name] = dim.get_prior_string()
+
+        self.parse_orion_overrides(arguments)
+
+    def parse_orion_overrides(self, arguments: List[str]) -> None:
+        for arg in arguments:
+            # name='loguniform(0, 1)'
+            name_prior = arg.replace("'", "").replace('"', "").split("=")
+
+            if len(name_prior) != 2:
+                continue
+
+            if name_prior in self.overrides:
+                continue
+
+            name, prior = name_prior
+            self.overrides[name] = prior
+
+    def process_overrides(self, override: Override) -> Optional[Dimension]:
+        values = override.value()
+        name = override.key_or_group
+
+        if not override.is_sweep_override():
+            self.arguments[name] = values
+            return None
+
+        elif override.is_choice_sweep():
+            return DimensionBuilder(name).choices(*values.list)
+
+        elif override.is_range_sweep():
+            choices = [v for v in range(values.start, values.stop, values.step)]
+            return DimensionBuilder(name).choices(*choices)
+
+        elif override.is_interval_sweep():
+            discrete = type(values.start) is int
+
+            return DimensionBuilder(name).uniform(
+                values.start, values.end, discrete=discrete
+            )
+
+    def parse_dimension(name, dim) -> Dimension:
+        return DimensionBuilder(name).build(dim)
 
 
 class OrionSweeperImpl(Sweeper):
     def __init__(
         self,
-        client: OrionClientConf,
+        orion: OrionClientConf,
         worker: WorkerConf,
-        parametrization: Optional[DictConfig]
+        algorithm: AlgorithmConf,
+        storage: StorageConf,
+        parametrization: Optional[DictConfig],
     ):
-        self.client_config = client
+        self.orion_config = orion
         self.worker_config = worker
+        self.algo_config = algorithm
+        self.storage_config = storage
 
-        self.config: Optional[DictConfig] = None
         self.launcher: Optional[Launcher] = None
         self.hydra_context: Optional[HydraContext] = None
         self.job_results = None
 
-        self.space: Dict[str, Any] = parametrization
         self.job_idx: Optional[int] = None
+
+        self.space_parser = SpaceParser()
+        self.space_parser.add_from_parametrization(parametrization)
 
     def setup(
         self,
@@ -197,9 +160,7 @@ class OrionSweeperImpl(Sweeper):
         # and use it with workon
         # which would make our research more efficient
         self.launcher = Plugins.instance().instantiate_launcher(
-            hydra_context=hydra_context,
-            task_function=task_function,
-            config=config
+            hydra_context=hydra_context, task_function=task_function, config=config
         )
 
     def suggest_trials(self, count) -> List[Trial]:
@@ -225,16 +186,9 @@ class OrionSweeperImpl(Sweeper):
 
     def new_experiment(self, arguments) -> ExperimentClient:
         """Initialize orion client from the config and the arguments"""
-        space, arguments = space_from_arguments(arguments)
 
-        client_config = OmegaConf.to_container(self.client_config)
-
-        if 'algorithms' in client_config:
-            algorithms_config = client_config.pop('algorithms')
-            algorithms_name = algorithms_config.pop('name', None)
-            client_config['algorithms'] = {
-                algorithms_name: algorithms_config
-            }
+        self.space_parser.add_from_overrides(arguments)
+        space, arguments = self.space_parser.space()
 
         print()
         print(space)
@@ -243,8 +197,20 @@ class OrionSweeperImpl(Sweeper):
         print()
 
         return create_experiment(
+            name=self.orion_config.name,
+            version=self.orion_config.version,
             space=space,
-            **client_config
+            algorithms={self.algo_config.name: self.algo_config.config},
+            strategy=None,
+            max_trials=self.worker_config.max_trials,
+            max_broken=self.worker_config.max_broken,
+            storage=self.storage_config,
+            branching=self.orion_config.branching,
+            max_idle_time=None,
+            heartbeat=None,
+            working_dir=None,
+            debug=self.orion_config.debug,
+            executor=None,
         )
 
     def sweep(self, arguments: List[str]) -> None:
@@ -260,9 +226,7 @@ class OrionSweeperImpl(Sweeper):
         while not self.client.is_done:
             trials = self.suggest_trials(self.worker_config.n_workers)
 
-            overrides = list(
-                as_overrides(t, dict())  for t in trials
-            )
+            overrides = list(as_overrides(t, dict()) for t in trials)
 
             self.validate_batch_is_legal(overrides)
             returns = self.launcher.launch(overrides, initial_job_idx=self.job_idx)
@@ -298,10 +262,10 @@ class OrionSweeperImpl(Sweeper):
         best_params = self.client.get_trial(uid=results.best_trials_id).params
 
         results = asdict(results)
-        results['best_params'] = best_params
-        results['start_time'] = str(results['start_time'])
-        results['finish_time'] = str(results['finish_time'])
-        results['duration'] = str(results['duration'])
+        results["best_params"] = best_params
+        results["start_time"] = str(results["start_time"])
+        results["finish_time"] = str(results["finish_time"])
+        results["duration"] = str(results["duration"])
 
         OmegaConf.save(
             OmegaConf.create(results),

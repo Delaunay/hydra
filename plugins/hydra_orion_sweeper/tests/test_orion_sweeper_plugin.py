@@ -29,22 +29,18 @@ def test_discovery() -> None:
 
 def test_orion_space():
     config = dict(
-        a0='uniform(0, 1)',
-        a1='uniform(0, 1, discrete=True)',
-        a2='uniform(0, 1, precision=2)',
-
-        b0='loguniform(1, 2)',
-        b1='loguniform(1, 2, discrete=True)',
-        b2='loguniform(1, 2, precision=2)',
-
-        c0='normal(0, 1)',
-        c1='normal(0, 1, discrete=True)',
-        c2='normal(0, 1, precision=True)',
-
+        a0="uniform(0, 1)",
+        a1="uniform(0, 1, discrete=True)",
+        a2="uniform(0, 1, precision=2)",
+        b0="loguniform(1, 2)",
+        b1="loguniform(1, 2, discrete=True)",
+        b2="loguniform(1, 2, precision=2)",
+        c0="normal(0, 1)",
+        c1="normal(0, 1, discrete=True)",
+        c2="normal(0, 1, precision=True)",
         d0='choices(["a", "b"])',
-
-        e0='fidelity(10, 100)',
-        e1='fidelity(10, 100, base=3)',
+        e0="fidelity(10, 100)",
+        e1="fidelity(10, 100, base=3)",
     )
 
     space = _impl.create_orion_space(config)
@@ -53,20 +49,16 @@ def test_orion_space():
 
 def test_orion_with_orion_overrides():
     overrides = [
-        'a0~uniform(0, 1)',
-        'a1~uniform(0, 1, discrete=True)',
+        "a0~uniform(0, 1)",
+        "a1~uniform(0, 1, discrete=True)",
         # 'a2~uniform(0, 1, precision=2)',
-
-        'b0~loguniform(1, 2)',
-        'b1~loguniform(1, 2, discrete=True)',
+        "b0~loguniform(1, 2)",
+        "b1~loguniform(1, 2, discrete=True)",
         # 'b2~loguniform(1, 2, precision=2)',
-
         # 'c0~normal(0, 1)',
         # 'c1~normal(0, 1, discrete=True)',
         # 'c2~normal(0, 1, precision=True)',
-
         "d0~choices(['a', 'b'])",
-
         # 'e0~fidelity(10, 100)',
         # 'e1~fidelity(10, 100, base=3)',
     ]
@@ -78,19 +70,17 @@ def test_orion_with_orion_overrides():
     # The order should be correct
     overrides.sort()
     for pair, expected in zip(space.configuration.items(), overrides):
-        assert pair == tuple(expected.split('~'))
+        assert pair == tuple(expected.split("~"))
 
 
 def test_orion_with_nevergrad_overrides():
     overrides = [
         # Overrides
-        ("choice_1=1,2", 'choice([1, 2])'),
-        ("choice_2=range(1, 8)", 'choice[1, 2, 3, 4, 5, 6, 7]'),
-
-        ("uniform_1=interval(0, 1)", 'uniform(0, 1)'),
-        ("uniform_2=int(interval(0, 1))", 'uniform(0, 1, discrete=True)'),
-        ("uniform_3=tag(log, interval(0, 1))", 'loguniform(0, 1)'),
-
+        ("choice_1=1,2", "choice([1, 2])"),
+        ("choice_2=range(1, 8)", "choice[1, 2, 3, 4, 5, 6, 7]"),
+        ("uniform_1=interval(0, 1)", "uniform(0, 1)"),
+        ("uniform_2=int(interval(0, 1))", "uniform(0, 1, discrete=True)"),
+        ("uniform_3=tag(log, interval(0, 1))", "loguniform(0, 1)"),
         # Regular argument
         ("bar=4:8", None),
     ]
@@ -117,9 +107,8 @@ def test_orion_arguments(hydra_sweep_runner: TSweepRunner) -> None:
             "+hydra.sweeper.orion.storage.host=test.db",
             "+hydra.sweeper.orion.storage.type=pickledb",
             "hydra.sweeper.worker.n_workers=3",
-
             "foo='choices([1, 2])'",
-            "bar='choices([4, 5, 6, 7, 8])'"
+            "bar='choices([4, 5, 6, 7, 8])'",
         ],
     )
 
@@ -131,22 +120,33 @@ def test_orion_arguments(hydra_sweep_runner: TSweepRunner) -> None:
 def test_orion_example(with_commandline: bool, tmpdir: Path) -> None:
     budget = 32 if with_commandline else 1  # make a full test only once (faster)
 
+    with_orion_format = True
+
     cmd = [
         "example/my_app.py",
         "-m",
         "hydra.sweep.dir=" + str(tmpdir),
         "hydra.job.chdir=True",
-        f"hydra.sweeper.optim.max_trials={budget}",  # small budget to test fast
-        f"hydra.sweeper.optim.num_workers={min(8, budget)}",
+        f"hydra.sweeper.orion.max_trials={budget}",  # small budget to test fast
+        "+hydra.sweeper.orion.algorithms.name=random",
+        f"hydra.sweeper.optim.n_workers={min(8, budget)}",
     ]
 
     if with_commandline:
-        cmd += [
-            "db=mnist,cifar",
-            "batch_size=4,8,12,16",
-            "lr=tag(log, interval(0.001, 1.0))",
-            "dropout=interval(0,1)",
-        ]
+        if with_orion_format:
+            cmd += [
+                'db=\'choices(["mnist", "cifar"])\'',
+                "batch_size='choices([4,8,12,16])'",
+                "lr='loguniform(0.001, 1.0)'",
+                "dropout='uniform(0,1)'",
+            ]
+        else:
+            cmd += [
+                "db=mnist,cifar",
+                "batch_size=4,8,12,16",
+                "lr=tag(log, interval(0.001, 1.0))",
+                "dropout=interval(0,1)",
+            ]
 
     run_python_script(cmd)
 
