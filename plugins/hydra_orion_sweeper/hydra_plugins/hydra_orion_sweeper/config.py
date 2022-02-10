@@ -6,15 +6,6 @@ from hydra.core.config_store import ConfigStore
 
 
 @dataclass
-class AlgorithmsConf:
-    hyperband: Optional[Dict[str, Any]] = None
-    random: Optional[Dict[str, Any]] = None
-    asha: Optional[Dict[str, Any]] = None
-    evolution_es: Optional[Dict[str, Any]] = None
-    tpe: Optional[Dict[str, Any]] = None
-
-
-@dataclass
 class OrionClientConf:
     """Orion EVC options"""
 
@@ -48,7 +39,7 @@ class StorageConf:
 class AlgorithmConf:
     """Orion optimization algorithm configuration"""
 
-    name: str = "random"
+    type: str = "random"
     config: Dict[str, Any] = field(default_factory=dict)
 
 

@@ -2,32 +2,16 @@
 from copy import deepcopy
 from dataclasses import asdict
 import logging
-import math
-from typing import (
-    Any,
-    Dict,
-    List,
-    MutableMapping,
-    MutableSequence,
-    Optional,
-    OrderedDict,
-    Tuple,
-    Union,
-)
+from typing import List, Optional
 
 from hydra.core import utils
 from hydra.core.override_parser.overrides_parser import OverridesParser
-from hydra.core.override_parser.types import (
-    ChoiceSweep,
-    IntervalSweep,
-    Override,
-    Transformer,
-)
+from hydra.core.override_parser.types import Override
 from hydra.core.plugins import Plugins
 from hydra.plugins.launcher import Launcher
 from hydra.plugins.sweeper import Sweeper
 from hydra.types import HydraContext, TaskFunction
-from omegaconf import DictConfig, ListConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from orion.core.utils.flatten import flatten
 from orion.client import create_experiment
@@ -57,21 +41,29 @@ class SpaceParser:
     """Generate an Orion space from parameters and overrides"""
 
     def __init__(self) -> None:
-        self.space = dict()
+        self.base_space = dict()
         self.overrides = dict()
         self.arguments = dict()
 
     def space(self) -> Space:
-        configuration = deepcopy(self.space)
+        """Generate the final space after overrides that will be used for the optimization"""
+        configuration = deepcopy(self.base_space)
+        log.info("Orion base space is %s", configuration)
         configuration.update(self.overrides)
+        log.info("Orion resolved space is %s", configuration)
         return SpaceBuilder().build(configuration), self.arguments
 
     def add_from_parametrization(self, parametrization: Optional[DictConfig]) -> None:
+        """Use the parametrization retrieved from the configuration to generate a
+        preliminary research space
+
+        """
         for k, v in parametrization.items():
-            dim = self.parse_parametrization(k, v)
-            self.space[dim.name] = dim.get_prior_string()
+            dim = DimensionBuilder().build(k, v)
+            self.base_space[dim.name] = dim.get_prior_string()
 
     def add_from_overrides(self, arguments: List[str]) -> None:
+        """Create a dictionary of overrides to modify the research space"""
         parser = OverridesParser.create()
         parsed = parser.parse_overrides(arguments)
 
@@ -79,31 +71,12 @@ class SpaceParser:
             dim = self.process_overrides(override)
             self.overrides[dim.name] = dim.get_prior_string()
 
-        self.parse_orion_overrides(arguments)
-
-    def parse_orion_overrides(self, arguments: List[str]) -> None:
-        for arg in arguments:
-            # name='loguniform(0, 1)'
-            name_prior = arg.replace("'", "").replace('"', "").split("=")
-
-            if len(name_prior) != 2:
-                continue
-
-            if name_prior in self.overrides:
-                continue
-
-            name, prior = name_prior
-            self.overrides[name] = prior
-
-    def process_overrides(self, override: Override) -> Optional[Dimension]:
+    def process_overrides(self, override: Override) -> Dimension:
+        """Identify the sweep overrides and build a matching dimension"""
         values = override.value()
         name = override.key_or_group
 
-        if not override.is_sweep_override():
-            self.arguments[name] = values
-            return None
-
-        elif override.is_choice_sweep():
+        if override.is_choice_sweep():
             return DimensionBuilder(name).choices(*values.list)
 
         elif override.is_range_sweep():
@@ -116,9 +89,9 @@ class SpaceParser:
             return DimensionBuilder(name).uniform(
                 values.start, values.end, discrete=discrete
             )
-
-    def parse_dimension(name, dim) -> Dimension:
-        return DimensionBuilder(name).build(dim)
+        else:
+            # Not sweep override but could still be orion
+            return DimensionBuilder().build(name, values)
 
 
 class OrionSweeperImpl(Sweeper):
@@ -138,7 +111,6 @@ class OrionSweeperImpl(Sweeper):
         self.launcher: Optional[Launcher] = None
         self.hydra_context: Optional[HydraContext] = None
         self.job_results = None
-
         self.job_idx: Optional[int] = None
 
         self.space_parser = SpaceParser()
@@ -155,10 +127,6 @@ class OrionSweeperImpl(Sweeper):
         self.config = config
         self.hydra_context = hydra_context
 
-        # Maybe we could have an option to replace the launcher
-        # by our own here, we can save the task function
-        # and use it with workon
-        # which would make our research more efficient
         self.launcher = Plugins.instance().instantiate_launcher(
             hydra_context=hydra_context, task_function=task_function, config=config
         )
@@ -190,17 +158,11 @@ class OrionSweeperImpl(Sweeper):
         self.space_parser.add_from_overrides(arguments)
         space, arguments = self.space_parser.space()
 
-        print()
-        print(space)
-        print(arguments)
-        print(self.client_config)
-        print()
-
         return create_experiment(
             name=self.orion_config.name,
             version=self.orion_config.version,
             space=space,
-            algorithms={self.algo_config.name: self.algo_config.config},
+            algorithms=self.algo_config.config,
             strategy=None,
             max_trials=self.worker_config.max_trials,
             max_broken=self.worker_config.max_broken,

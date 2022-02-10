@@ -102,10 +102,7 @@ def test_orion_arguments(hydra_sweep_runner: TSweepRunner) -> None:
         overrides=[
             "hydra/sweeper=orion",
             "hydra/launcher=basic",
-            f"hydra.sweeper.orion.max_trials={budget}",  # small budget to test fast
-            "+hydra.sweeper.orion.algorithms.name=random",
-            "+hydra.sweeper.orion.storage.host=test.db",
-            "+hydra.sweeper.orion.storage.type=pickledb",
+            f"hydra.sweeper.worker.max_trials={budget}",  # small budget to test fast
             "hydra.sweeper.worker.n_workers=3",
             "foo='choices([1, 2])'",
             "bar='choices([4, 5, 6, 7, 8])'",
@@ -127,9 +124,8 @@ def test_orion_example(with_commandline: bool, tmpdir: Path) -> None:
         "-m",
         "hydra.sweep.dir=" + str(tmpdir),
         "hydra.job.chdir=True",
-        f"hydra.sweeper.orion.max_trials={budget}",  # small budget to test fast
-        "+hydra.sweeper.orion.algorithms.name=random",
-        f"hydra.sweeper.optim.n_workers={min(8, budget)}",
+        f"hydra.sweeper.worker.max_trials={budget}",  # small budget to test fast
+        f"hydra.sweeper.worker.n_workers={min(8, budget)}",
     ]
 
     if with_commandline:
@@ -167,22 +163,20 @@ def test_orion_example(with_commandline: bool, tmpdir: Path) -> None:
     assert last_job == budget - 1
 
 
-# @mark.parametrize("max_failure_rate", (0.5, 1.0))
-# def test_failure_rate(max_failure_rate: float, tmpdir: Path) -> None:
-#     cmd = [
-#         sys.executable,
-#         "example/my_app.py",
-#         "-m",
-#         f"hydra.sweep.dir={tmpdir}",
-#         "hydra.sweeper.optim.budget=2",  # small budget to test fast
-#         "hydra.sweeper.optim.num_workers=2",
-#         f"hydra.sweeper.optim.max_failure_rate={max_failure_rate}",
-#         "error=true",
-#     ]
-#     out, err = run_process(cmd, print_error=False, raise_exception=False)
-#     assert "Returning infinity for failed experiment" in out
-#     error_string = "RuntimeError: cfg.error is True"
-#     if max_failure_rate < 1.0:
-#         assert error_string in err
-#     else:
-#         assert error_string not in err
+def test_failure_rate(tmpdir: Path) -> None:
+    cmd = [
+        sys.executable,
+        "example/my_app.py",
+        "-m",
+        f"hydra.sweep.dir={tmpdir}",
+        "hydra.sweeper.worker.max_trials=2",  # small budget to test fast
+        "hydra.sweeper.worker.n_workers=2",
+        f"hydra.sweeper.worker.max_broken=1",
+        "error=true",
+    ]
+    out, err = run_process(cmd, print_error=False, raise_exception=False)
+
+    assert "Returning infinity for failed experiment" in out
+
+    error_string = "RuntimeError: cfg.error is True"
+    assert error_string in err
