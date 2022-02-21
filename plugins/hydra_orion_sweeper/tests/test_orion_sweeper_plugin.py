@@ -1,5 +1,6 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 import sys
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,41 @@ from hydra_plugins.hydra_orion_sweeper.orion_sweeper import OrionSweeper
 
 chdir_plugin_root()
 
+parametrization = dict(
+    a0="uniform(0, 1)",
+    a1="uniform(0, 1, discrete=True)",
+    a2="uniform(0, 1, precision=2)",
+    b0="loguniform(1, 2)",
+    b1="loguniform(1, 2, discrete=True)",
+    b2="loguniform(1, 2, precision=2)",
+    c0="normal(0, 1)",
+    c1="normal(0, 1, discrete=True)",
+    c2="normal(0, 1, precision=True)",
+    d0='choices([\'a\', \'b\'])',
+    e0="fidelity(10, 100)",
+    e1="fidelity(10, 100, base=3)",
+)
+
+nevergrad_overrides = [
+    'a0=interval(1, 2)',
+    'a1=int(interval(1, 2))',
+    'b0=tag(log, interval(0.001, 1.0))',
+    'd0=a,b,c,d',
+]
+
+orion_overrides = [
+    'a0="uniform(1, 2)"',
+    'a1="uniform(1, 2, discrete=True)"',
+    'b0="loguniform(0.001, 1.0)"',
+    'd0="choices([\'a\', \'b\', \'c\', \'d\'])"',
+]
+
+overriden_parametrization = dict(
+    a0="uniform(1, 2)",
+    a1="uniform(1, 2, discrete=True)",
+    b0="loguniform(0.001, 1.0)",
+    d0='choices([\'a\', \'b\', \'c\', \'d\'])'
+)
 
 def test_discovery() -> None:
     assert OrionSweeper.__name__ in [
@@ -27,68 +63,21 @@ def test_discovery() -> None:
     ]
 
 
-def test_orion_space():
-    config = dict(
-        a0="uniform(0, 1)",
-        a1="uniform(0, 1, discrete=True)",
-        a2="uniform(0, 1, precision=2)",
-        b0="loguniform(1, 2)",
-        b1="loguniform(1, 2, discrete=True)",
-        b2="loguniform(1, 2, precision=2)",
-        c0="normal(0, 1)",
-        c1="normal(0, 1, discrete=True)",
-        c2="normal(0, 1, precision=True)",
-        d0='choices(["a", "b"])',
-        e0="fidelity(10, 100)",
-        e1="fidelity(10, 100, base=3)",
-    )
+@mark.parametrize("overrides", ([], orion_overrides, nevergrad_overrides))
+def test_space_parser(overrides):
+    parser = _impl.SpaceParser()
+    parser.add_from_parametrization(parametrization)
+    space, _ = parser.space()
+    assert space.configuration == parametrization
 
-    space = _impl.create_orion_space(config)
-    assert config == space.configuration
+    parser.add_from_overrides(overrides)
+    space, _ = parser.space()
 
+    if len(overrides) > 0:
+        space_with_override = deepcopy(parametrization)
+        space_with_override.update(overriden_parametrization)
 
-def test_orion_with_orion_overrides():
-    overrides = [
-        "a0~uniform(0, 1)",
-        "a1~uniform(0, 1, discrete=True)",
-        # 'a2~uniform(0, 1, precision=2)',
-        "b0~loguniform(1, 2)",
-        "b1~loguniform(1, 2, discrete=True)",
-        # 'b2~loguniform(1, 2, precision=2)',
-        # 'c0~normal(0, 1)',
-        # 'c1~normal(0, 1, discrete=True)',
-        # 'c2~normal(0, 1, precision=True)',
-        "d0~choices(['a', 'b'])",
-        # 'e0~fidelity(10, 100)',
-        # 'e1~fidelity(10, 100, base=3)',
-    ]
-    # Make the order wrong
-    overrides.sort(reverse=True)
-
-    space, _ = _impl.space_from_orion_overrides(overrides)
-
-    # The order should be correct
-    overrides.sort()
-    for pair, expected in zip(space.configuration.items(), overrides):
-        assert pair == tuple(expected.split("~"))
-
-
-def test_orion_with_nevergrad_overrides():
-    overrides = [
-        # Overrides
-        ("choice_1=1,2", "choice([1, 2])"),
-        ("choice_2=range(1, 8)", "choice[1, 2, 3, 4, 5, 6, 7]"),
-        ("uniform_1=interval(0, 1)", "uniform(0, 1)"),
-        ("uniform_2=int(interval(0, 1))", "uniform(0, 1, discrete=True)"),
-        ("uniform_3=tag(log, interval(0, 1))", "loguniform(0, 1)"),
-        # Regular argument
-        ("bar=4:8", None),
-    ]
-
-    space, _ = _impl.space_from_overrides([override[0] for override in overrides])
-
-    for (_, dim), expected in zip(space.configuration.items(), overrides):
-        assert dim == expected
+        assert space.configuration == space_with_override
 
 
 def test_orion_arguments(hydra_sweep_runner: TSweepRunner) -> None:
@@ -131,7 +120,7 @@ def test_orion_example(with_commandline: bool, tmpdir: Path) -> None:
     if with_commandline:
         if with_orion_format:
             cmd += [
-                'db=\'choices(["mnist", "cifar"])\'',
+                "db='choices([\"mnist\", \"cifar\"])'",
                 "batch_size='choices([4,8,12,16])'",
                 "lr='loguniform(0.001, 1.0)'",
                 "dropout='uniform(0,1)'",

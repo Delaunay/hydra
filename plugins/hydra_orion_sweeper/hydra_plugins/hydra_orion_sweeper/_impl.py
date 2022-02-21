@@ -50,7 +50,7 @@ class SpaceParser:
         configuration = deepcopy(self.base_space)
         log.info("Orion base space is %s", configuration)
         configuration.update(self.overrides)
-        log.info("Orion resolved space is %s", configuration)
+        log.info("Orion space overrides are %s", self.overrides)
         return SpaceBuilder().build(configuration), self.arguments
 
     def add_from_parametrization(self, parametrization: Optional[DictConfig]) -> None:
@@ -76,19 +76,31 @@ class SpaceParser:
         values = override.value()
         name = override.key_or_group
 
+        def build_dim(name):
+            builder = DimensionBuilder()
+            builder.name = name
+            return builder
+
         if override.is_choice_sweep():
-            return DimensionBuilder(name).choices(*values.list)
+            return build_dim(name).choices(*values.list)
 
         elif override.is_range_sweep():
             choices = [v for v in range(values.start, values.stop, values.step)]
-            return DimensionBuilder(name).choices(*choices)
+            return build_dim(name).choices(*choices)
 
         elif override.is_interval_sweep():
             discrete = type(values.start) is int
+            log = 'log' in values.tags
 
-            return DimensionBuilder(name).uniform(
-                values.start, values.end, discrete=discrete
-            )
+            cast_type = float
+            if discrete or values.start % 1 == values.end % 1 == 0.0:
+                cast_type = int
+
+            method = build_dim(name).uniform
+            if log:
+                method = build_dim(name).loguniform
+
+            return method(cast_type(values.start), cast_type(values.end), discrete=discrete)
         else:
             # Not sweep override but could still be orion
             return DimensionBuilder().build(name, values)
