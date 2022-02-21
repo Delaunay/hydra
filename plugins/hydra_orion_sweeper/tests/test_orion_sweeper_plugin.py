@@ -34,6 +34,7 @@ parametrization = dict(
     d0='choices([\'a\', \'b\'])',
     e0="fidelity(10, 100)",
     e1="fidelity(10, 100, base=3)",
+    r1=123,
 )
 
 nevergrad_overrides = [
@@ -41,6 +42,7 @@ nevergrad_overrides = [
     'a1=int(interval(1, 2))',
     'b0=tag(log, interval(0.001, 1.0))',
     'd0=a,b,c,d',
+    'r1=234',
 ]
 
 orion_overrides = [
@@ -48,13 +50,14 @@ orion_overrides = [
     'a1="uniform(1, 2, discrete=True)"',
     'b0="loguniform(0.001, 1.0)"',
     'd0="choices([\'a\', \'b\', \'c\', \'d\'])"',
+    'r1=234',
 ]
 
 overriden_parametrization = dict(
     a0="uniform(1, 2)",
     a1="uniform(1, 2, discrete=True)",
     b0="loguniform(0.001, 1.0)",
-    d0='choices([\'a\', \'b\', \'c\', \'d\'])'
+    d0='choices([\'a\', \'b\', \'c\', \'d\'])',
 )
 
 def test_discovery() -> None:
@@ -65,22 +68,27 @@ def test_discovery() -> None:
 
 @mark.parametrize("overrides", ([], orion_overrides, nevergrad_overrides))
 def test_space_parser(overrides):
+    space_params = deepcopy(parametrization)
+    space_params.pop('r1')
+
     parser = _impl.SpaceParser()
     parser.add_from_parametrization(parametrization)
-    space, _ = parser.space()
-    assert space.configuration == parametrization
 
-    parser.add_from_overrides(overrides)
-    space, _ = parser.space()
+    space, args = parser.space()
+    assert space.configuration == space_params, "Generated space match definition"
+    assert args == dict(r1=123), "Regular argument was identified"
 
     if len(overrides) > 0:
-        space_with_override = deepcopy(parametrization)
-        space_with_override.update(overriden_parametrization)
+        parser.add_from_overrides(overrides)
+        space, args = parser.space()
 
-        assert space.configuration == space_with_override
+        space_params.update(overriden_parametrization)
+
+        assert space.configuration == space_params, "Generated space match overriden definition"
+        assert args == dict(r1=234), "Regular argument was overriden"
 
 
-def test_orion_arguments(hydra_sweep_runner: TSweepRunner) -> None:
+def test_launched_jobs(hydra_sweep_runner: TSweepRunner) -> None:
     budget = 8
     sweep = hydra_sweep_runner(
         calling_file=None,

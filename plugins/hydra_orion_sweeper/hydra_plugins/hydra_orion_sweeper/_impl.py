@@ -59,8 +59,12 @@ class SpaceParser:
 
         """
         for k, v in parametrization.items():
-            dim = DimensionBuilder().build(k, v)
-            self.base_space[dim.name] = dim.get_prior_string()
+            try:
+                dim = DimensionBuilder().build(k, v)
+                self.base_space[dim.name] = dim.get_prior_string()
+            except TypeError:
+                # Regular argument
+                self.arguments[k] = v
 
     def add_from_overrides(self, arguments: List[str]) -> None:
         """Create a dictionary of overrides to modify the research space"""
@@ -69,12 +73,16 @@ class SpaceParser:
 
         for override in parsed:
             dim = self.process_overrides(override)
-            self.overrides[dim.name] = dim.get_prior_string()
+
+            if dim is None:
+                self.arguments[override.get_key_element()] = override.value()
+            else:
+                self.overrides[dim.name] = dim.get_prior_string()
 
     def process_overrides(self, override: Override) -> Dimension:
         """Identify the sweep overrides and build a matching dimension"""
         values = override.value()
-        name = override.key_or_group
+        name = override.get_key_element()
 
         def build_dim(name):
             builder = DimensionBuilder()
@@ -102,8 +110,12 @@ class SpaceParser:
 
             return method(cast_type(values.start), cast_type(values.end), discrete=discrete)
         else:
-            # Not sweep override but could still be orion
-            return DimensionBuilder().build(name, values)
+            try:
+                # Not sweep override but could still be orion
+                return DimensionBuilder().build(name, values)
+            except TypeError:
+                # Not a hyperparameter space definition
+                pass
 
 
 class OrionSweeperImpl(Sweeper):
@@ -139,6 +151,9 @@ class OrionSweeperImpl(Sweeper):
         self.config = config
         self.hydra_context = hydra_context
 
+        self.space = None
+        self.arguments = dict()
+
         self.launcher = Plugins.instance().instantiate_launcher(
             hydra_context=hydra_context, task_function=task_function, config=config
         )
@@ -168,12 +183,12 @@ class OrionSweeperImpl(Sweeper):
         """Initialize orion client from the config and the arguments"""
 
         self.space_parser.add_from_overrides(arguments)
-        space, arguments = self.space_parser.space()
+        self.space = space, self.arguments = self.space_parser.space()
 
         return create_experiment(
             name=self.orion_config.name,
             version=self.orion_config.version,
-            space=space,
+            space=self.space,
             algorithms=self.algo_config.config,
             strategy=None,
             max_trials=self.worker_config.max_trials,
@@ -200,7 +215,7 @@ class OrionSweeperImpl(Sweeper):
         while not self.client.is_done:
             trials = self.suggest_trials(self.worker_config.n_workers)
 
-            overrides = list(as_overrides(t, dict()) for t in trials)
+            overrides = list(as_overrides(t, self.arguments) for t in trials)
 
             self.validate_batch_is_legal(overrides)
             returns = self.launcher.launch(overrides, initial_job_idx=self.job_idx)
@@ -221,6 +236,7 @@ class OrionSweeperImpl(Sweeper):
                     failures.append(result)
 
                 elif result.status == utils.JobStatus.UNKNOWN:
+                    # Might be interrupted by user
                     self.client.release(trial, status="interrupted")
 
             if len(failures) > self.worker_config.max_broken:
