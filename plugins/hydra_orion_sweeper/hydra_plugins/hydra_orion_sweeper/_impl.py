@@ -183,7 +183,7 @@ class OrionSweeperImpl(Sweeper):
         """Initialize orion client from the config and the arguments"""
 
         self.space_parser.add_from_overrides(arguments)
-        self.space = space, self.arguments = self.space_parser.space()
+        self.space, self.arguments = self.space_parser.space()
 
         return create_experiment(
             name=self.orion_config.name,
@@ -209,11 +209,13 @@ class OrionSweeperImpl(Sweeper):
         assert self.launcher is not None
         assert self.job_idx is not None
 
+        log.info("Starting new experiment")
         self.client = self.new_experiment(arguments)
         failures = []
 
         while not self.client.is_done:
             trials = self.suggest_trials(self.worker_config.n_workers)
+            log.info("Suggest new %d trials", len(trials))
 
             overrides = list(as_overrides(t, self.arguments) for t in trials)
 
