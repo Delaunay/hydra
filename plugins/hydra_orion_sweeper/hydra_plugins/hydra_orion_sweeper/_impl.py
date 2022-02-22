@@ -1,8 +1,9 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict
 import logging
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from hydra.core import utils
 from hydra.core.override_parser.overrides_parser import OverridesParser
@@ -11,18 +12,22 @@ from hydra.core.plugins import Plugins
 from hydra.plugins.launcher import Launcher
 from hydra.plugins.sweeper import Sweeper
 from hydra.types import HydraContext, TaskFunction
+from hydra.core.utils import JobReturn
+
 from omegaconf import DictConfig, OmegaConf
+
 
 from orion.core.utils.flatten import flatten
 from orion.client import create_experiment
 from orion.client.experiment import ExperimentClient
-from orion.core.worker.trial import Trial
+from orion.core.worker.trial import Trial, AlreadyReleased
 from orion.algo.space import Space, Dimension
 from orion.core.io.space_builder import DimensionBuilder, SpaceBuilder
 from orion.core.utils.exceptions import (
     CompletedExperiment,
     ReservationRaceCondition,
     WaitingForTrials,
+    BrokenExperiment,
 )
 
 from .config import OrionClientConf, WorkerConf, AlgorithmConf, StorageConf
@@ -34,7 +39,7 @@ def as_overrides(trial, additional):
     """Returns the trial arguments as hydra overrides"""
     kwargs = deepcopy(additional)
     kwargs.update(flatten(trial.params))
-    return tuple(f"{k}={v}" for k, v in kwargs.items())
+    return tuple(f"++{k}={v}" for k, v in kwargs.items())
 
 
 class SpaceParser:
@@ -62,7 +67,7 @@ class SpaceParser:
             try:
                 dim = DimensionBuilder().build(k, v)
                 self.base_space[dim.name] = dim.get_prior_string()
-            except TypeError:
+            except (TypeError, NameError):
                 # Regular argument
                 self.arguments[k] = v
 
@@ -98,7 +103,7 @@ class SpaceParser:
 
         elif override.is_interval_sweep():
             discrete = type(values.start) is int
-            log = 'log' in values.tags
+            log = "log" in values.tags
 
             cast_type = float
             if discrete or values.start % 1 == values.end % 1 == 0.0:
@@ -108,14 +113,24 @@ class SpaceParser:
             if log:
                 method = build_dim(name).loguniform
 
-            return method(cast_type(values.start), cast_type(values.end), discrete=discrete)
+            return method(
+                cast_type(values.start), cast_type(values.end), discrete=discrete
+            )
         else:
             try:
                 # Not sweep override but could still be orion
                 return DimensionBuilder().build(name, values)
-            except TypeError:
+            except (TypeError, NameError):
                 # Not a hyperparameter space definition
                 pass
+
+
+@contextmanager
+def clientctx(client):
+    try:
+        yield client
+    finally:
+        client.close()
 
 
 class OrionSweeperImpl(Sweeper):
@@ -150,9 +165,12 @@ class OrionSweeperImpl(Sweeper):
         self.job_idx = 0
         self.config = config
         self.hydra_context = hydra_context
+        self.pending_trials = set()
 
         self.space = None
         self.arguments = dict()
+
+        log.info("Starting launcher")
 
         self.launcher = Plugins.instance().instantiate_launcher(
             hydra_context=hydra_context, task_function=task_function, config=config
@@ -211,41 +229,85 @@ class OrionSweeperImpl(Sweeper):
 
         log.info("Starting new experiment")
         self.client = self.new_experiment(arguments)
+
+        with clientctx(self.client):
+            try:
+                self.optimize(self.client)
+            except Exception as e:
+                self.release_all()
+                raise e
+
+    def release_all(self) -> None:
+        """Make sure not trials remain reserved"""
+        for trial in self.pending_trials:
+            try:
+                self.client.release(trial, status="interrupted")
+            except AlreadyReleased:
+                pass
+
+    def optimize(self, client: ExperimentClient) -> None:
+        """Run the hyperparameter search in batches"""
         failures = []
 
         while not self.client.is_done:
-            trials = self.suggest_trials(self.worker_config.n_workers)
-            log.info("Suggest new %d trials", len(trials))
+            trials = self.sample_trials()
 
-            overrides = list(as_overrides(t, self.arguments) for t in trials)
+            returns = self.execute_trials(trials)
 
-            self.validate_batch_is_legal(overrides)
-            returns = self.launcher.launch(overrides, initial_job_idx=self.job_idx)
-
-            self.job_idx += len(returns)
-
-            for trial, result in zip(trials, returns):
-                if result.status == utils.JobStatus.COMPLETED:
-                    value = result.return_value
-
-                    objective = dict(name="objective", type="objective", value=value)
-
-                    self.client.observe(trial, [objective])
-
-                elif result.status == utils.JobStatus.FAILED:
-                    # We probably got an exception
-                    self.client.release(trial, status="broken")
-                    failures.append(result)
-
-                elif result.status == utils.JobStatus.UNKNOWN:
-                    # Might be interrupted by user
-                    self.client.release(trial, status="interrupted")
+            self.observe_results(trials, returns, failures)
 
             if len(failures) > self.worker_config.max_broken:
                 # make the `Future` raise the exception it received
-                failures[-1].return_value
+                try:
+                    failures[-1].return_value
+                except Exception as e:
+                    raise BrokenExperiment("Max broken trials reached, stopping") from e
 
         self.show_results()
+
+    def sample_trials(self) -> List[Trial]:
+        """Sample a new batch of trials"""
+
+        trials = self.suggest_trials(self.worker_config.n_workers)
+        log.info("Suggest %d new trials", len(trials))
+        self.pending_trials.update(set(trials))
+        return trials
+
+    def execute_trials(self, trials: List[Trial]) -> Sequence[JobReturn]:
+        """Execture the given batch of trials"""
+
+        overrides = list(as_overrides(t, self.arguments) for t in trials)
+        self.validate_batch_is_legal(overrides)
+
+        returns = self.launcher.launch(overrides, initial_job_idx=self.job_idx)
+        self.job_idx += len(returns)
+        return returns
+
+    def observe_results(
+        self,
+        trials: List[Trial],
+        returns: Sequence[JobReturn],
+        failures: Sequence[JobReturn],
+    ):
+        """Record the result of each trials"""
+        for trial, result in zip(trials, returns):
+            self.pending_trials.remove(trial)
+
+            if result.status == utils.JobStatus.COMPLETED:
+                value = result.return_value
+
+                objective = dict(name="objective", type="objective", value=value)
+
+                self.client.observe(trial, [objective])
+
+            elif result.status == utils.JobStatus.FAILED:
+                # We probably got an exception
+                self.client.release(trial, status="broken")
+                failures.append(result)
+
+            elif result.status == utils.JobStatus.UNKNOWN:
+                # Might be interrupted by user
+                self.client.release(trial, status="interrupted")
 
     def show_results(self) -> None:
         """Retrieve the optimization stats and show which config was the best"""
@@ -254,7 +316,8 @@ class OrionSweeperImpl(Sweeper):
         best_params = self.client.get_trial(uid=results.best_trials_id).params
 
         results = asdict(results)
-        results["best_params"] = best_params
+        results["name"] = "orion"
+        results["best_evaluated_params"] = best_params
         results["start_time"] = str(results["start_time"])
         results["finish_time"] = str(results["finish_time"])
         results["duration"] = str(results["duration"])

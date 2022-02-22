@@ -31,34 +31,35 @@ parametrization = dict(
     c0="normal(0, 1)",
     c1="normal(0, 1, discrete=True)",
     c2="normal(0, 1, precision=True)",
-    d0='choices([\'a\', \'b\'])',
+    d0="choices(['a', 'b'])",
     e0="fidelity(10, 100)",
     e1="fidelity(10, 100, base=3)",
     r1=123,
 )
 
 nevergrad_overrides = [
-    'a0=interval(1, 2)',
-    'a1=int(interval(1, 2))',
-    'b0=tag(log, interval(0.001, 1.0))',
-    'd0=a,b,c,d',
-    'r1=234',
+    "a0=interval(1, 2)",
+    "a1=int(interval(1, 2))",
+    "b0=tag(log, interval(0.001, 1.0))",
+    "d0=a,b,c,d",
+    "r1=234",
 ]
 
 orion_overrides = [
     'a0="uniform(1, 2)"',
     'a1="uniform(1, 2, discrete=True)"',
     'b0="loguniform(0.001, 1.0)"',
-    'd0="choices([\'a\', \'b\', \'c\', \'d\'])"',
-    'r1=234',
+    "d0=\"choices(['a', 'b', 'c', 'd'])\"",
+    "r1=234",
 ]
 
 overriden_parametrization = dict(
     a0="uniform(1, 2)",
     a1="uniform(1, 2, discrete=True)",
     b0="loguniform(0.001, 1.0)",
-    d0='choices([\'a\', \'b\', \'c\', \'d\'])',
+    d0="choices(['a', 'b', 'c', 'd'])",
 )
+
 
 def test_discovery() -> None:
     assert OrionSweeper.__name__ in [
@@ -69,7 +70,7 @@ def test_discovery() -> None:
 @mark.parametrize("overrides", ([], orion_overrides, nevergrad_overrides))
 def test_space_parser(overrides):
     space_params = deepcopy(parametrization)
-    space_params.pop('r1')
+    space_params.pop("r1")
 
     parser = _impl.SpaceParser()
     parser.add_from_parametrization(parametrization)
@@ -84,7 +85,9 @@ def test_space_parser(overrides):
 
         space_params.update(overriden_parametrization)
 
-        assert space.configuration == space_params, "Generated space match overriden definition"
+        assert (
+            space.configuration == space_params
+        ), "Generated space match overriden definition"
         assert args == dict(r1=234), "Regular argument was overriden"
 
 
@@ -114,7 +117,7 @@ def test_launched_jobs(hydra_sweep_runner: TSweepRunner) -> None:
 def test_orion_example(with_commandline: bool, tmpdir: Path) -> None:
     budget = 32 if with_commandline else 1  # make a full test only once (faster)
 
-    with_orion_format = True
+    with_orion_format = False
 
     cmd = [
         "example/my_app.py",
@@ -128,10 +131,10 @@ def test_orion_example(with_commandline: bool, tmpdir: Path) -> None:
     if with_commandline:
         if with_orion_format:
             cmd += [
-                "db='choices([\"mnist\", \"cifar\"])'",
-                "batch_size='choices([4,8,12,16])'",
-                "lr='loguniform(0.001, 1.0)'",
-                "dropout='uniform(0,1)'",
+                "db='\"choices(['mnist', 'cifar'])\"'",
+                "batch_size='\"choices([4,8,12,16])\"'",
+                "lr='\"loguniform(0.001, 1.0)\"'",
+                "dropout='\"uniform(0,1)\"'",
             ]
         else:
             cmd += [
@@ -147,7 +150,7 @@ def test_orion_example(with_commandline: bool, tmpdir: Path) -> None:
 
     assert isinstance(returns, DictConfig)
     assert returns.name == "orion"
-    assert len(returns) == 3
+    assert len(returns) == 8
 
     best_parameters = returns.best_evaluated_params
     assert not best_parameters.dropout.is_integer()
@@ -171,9 +174,11 @@ def test_failure_rate(tmpdir: Path) -> None:
         f"hydra.sweeper.worker.max_broken=1",
         "error=true",
     ]
-    out, err = run_process(cmd, print_error=False, raise_exception=False)
 
-    assert "Returning infinity for failed experiment" in out
+    _, err = run_process(cmd, print_error=False, raise_exception=False)
 
-    error_string = "RuntimeError: cfg.error is True"
-    assert error_string in err
+    original_error_string = "RuntimeError: cfg.error is True"
+    assert original_error_string in err
+
+    broken_error_string = "BrokenExperiment: Max broken trials reached, stopping"
+    assert broken_error_string in err
